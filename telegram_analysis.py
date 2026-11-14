@@ -1,4 +1,4 @@
-# МосУ МВД · 36 визуализаций + автономный HTML · одна ячейка Google Colab
+#@title Запустить анализ МВД: все 36 графиков внутри Colab
 # Путь пользователя: /Messages_МосУ_МВД_России_имени_В_Я_Кикотя.csv
 import sys, subprocess
 try:
@@ -316,8 +316,8 @@ def build_report(source, quality, metadata, start, end, level, content, min_view
     # Дополнительные представления используют тот же отфильтрованный набор d.
     add("cumulative", "line", "Накопленное число единиц анализа", "Накопление строк или временных групп в выбранном периоде; это не рост подписчиков.",
         x=days, series={"Накоплено": activity.cumsum()}, ylabel="Единиц анализа", fill=True)
-    weekday_days = pd.Series(days.dayofweek).value_counts().reindex(range(7), fill_value=0)
-    weekday_count = d.groupby(d.Date.dt.dayofweek).size().reindex(range(7), fill_value=0)
+    weekday_days = pd.Series(days.day_of_week).value_counts().reindex(range(7), fill_value=0)
+    weekday_count = d.groupby(d.Date.dt.day_of_week).size().reindex(range(7), fill_value=0)
     weekday_mean = weekday_count / weekday_days.replace(0, np.nan)
     add("weekday_mean", "bar", "Средняя активность по дням недели", "Число единиц делится на число соответствующих календарных дней внутри фильтра, включая дни без записей.",
         labels=WEEKDAYS, values=weekday_mean.tolist(), xlabel="Единиц на календарный день", decimals=2)
@@ -331,14 +331,14 @@ def build_report(source, quality, metadata, start, end, level, content, min_view
     add("content_share", "stack100", "Доля записей с текстом по месяцам", "Доли рассчитаны от числа единиц месяца. Месяцы без записей оставлены пустыми.",
         x=list(months), series={k: 100 * composition[k] / composition.sum(axis=1).replace(0, np.nan) for k in composition}, ylabel="Доля единиц, %")
     calendar = pd.DataFrame({"date": days, "n": activity.to_numpy()})
-    calendar["week"] = calendar.date - pd.to_timedelta(calendar.date.dt.dayofweek, unit="D")
+    calendar["week"] = calendar.date - pd.to_timedelta(calendar.date.dt.day_of_week, unit="D")
     weeks = pd.date_range(calendar.week.min(), calendar.week.max(), freq="7D")
     calendar_z = np.full((7, len(weeks)), np.nan)
     calendar_dates = np.full(calendar_z.shape, "Вне выбранного периода", dtype=object)
     for row in calendar.itertuples():
         j = int((row.week - weeks[0]).days // 7)
-        calendar_z[row.date.dayofweek, j] = row.n
-        calendar_dates[row.date.dayofweek, j] = row.date.strftime("%d.%m.%Y")
+        calendar_z[row.date.day_of_week, j] = row.n
+        calendar_dates[row.date.day_of_week, j] = row.date.strftime("%d.%m.%Y")
     add("calendar", "matrix", "Календарь активности", "Каждая клетка — календарный день. Пустые клетки находятся вне выбранного периода; ноль означает отсутствие записей в CSV.",
         z=calendar_z, x=weeks.strftime("%d.%m.%y").tolist(), y=WEEKDAYS,
         custom=calendar_dates, xlabel="Неделя с понедельника", ylabel="День недели", colorlabel="Единиц", colorscale="Blues")
@@ -352,7 +352,7 @@ def build_report(source, quality, metadata, start, end, level, content, min_view
     month_groups = {m: g.views.dropna().to_numpy() for m, g in temp.groupby("Month")}
     add("monthly_box", "box", "Разброс просмотров внутри каждого месяца", "Коробка — Q25–Q75 и медиана; точки за усами — наблюдения за пределами 1,5 межквартильного размаха. Счётчики разного возраста.",
         groups=month_groups, ylabel="Просмотры", xlabel="Месяц")
-    weekday_groups = {WEEKDAYS[k]: g.views.dropna().to_numpy() for k, g in d.groupby(d.Date.dt.dayofweek)}
+    weekday_groups = {WEEKDAYS[k]: g.views.dropna().to_numpy() for k, g in d.groupby(d.Date.dt.day_of_week)}
     add("weekday_violin", "violin", "Распределение просмотров по дням недели", "Ширина показывает сглаженную плотность наблюдений; внутри отмечена медиана. Это описательное сравнение, не доказательство влияния дня недели.",
         groups=weekday_groups, ylabel="Просмотры")
     leaders = d.dropna(subset=["views"]).nlargest(15, "views")
@@ -857,26 +857,16 @@ def create_html_report(r, output_dir=OUTPUT_DIR):
     return write_html_report(r, Path(output_dir) / f"mvd_report_{stamp}.html")
 
 
-def report_server(output_dir):
-    """Сервер обслуживает только папку готовых отчётов, запускается по требованию."""
-    from functools import partial
-    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-    from threading import Thread
-    global _MVD_HTML_SERVER
-    directory = Path(output_dir).resolve()
-    directory.mkdir(parents=True, exist_ok=True)
-    previous = globals().get("_MVD_HTML_SERVER")
-    if previous and previous[0] == str(directory):
-        return previous[1].server_address[1]
-    if previous:
-        previous[1].shutdown(); previous[1].server_close()
-    class QuietHandler(SimpleHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(QuietHandler, directory=str(directory)))
-    Thread(target=server.serve_forever, daemon=True).start()
-    _MVD_HTML_SERVER = (str(directory), server)
-    return server.server_address[1]
+def notebook_report_frame(path):
+    """Изолированный HTML прямо в выводе ноутбука, без порта и внешнего сайта."""
+    from IPython.display import IFrame
+    document = Path(path).read_text(encoding="utf-8")
+    # srcdoc даёт Plotly собственный документ. В Colab HTML внутри Output-виджета
+    # меняет DOM и область видимости скриптов; из-за этого часть графиков терялась.
+    return IFrame(src="about:blank", width="100%", height=950, extras=[
+        'title="Отчёт МВД — 36 графиков"', 'allowfullscreen',
+        'style="width:100%;height:950px;border:1px solid #dce5f1;border-radius:12px"',
+        'srcdoc="' + escape(document, quote=True) + '"'])
 
 
 def launch(source, quality, metadata):
@@ -884,7 +874,6 @@ def launch(source, quality, metadata):
     end = W.DatePicker(description="По дату", value=source.Date.max().date())
     level = W.Dropdown(description="Единица", options=["Записи CSV", "Группы по времени"], layout=W.Layout(width="300px"))
     content = W.Dropdown(description="Содержание", options=["Все", "С текстом", "Без текста"])
-    section = W.Dropdown(description="Раздел", options=list(SECTIONS), layout=W.Layout(width="310px"))
     threshold = W.BoundedIntText(description="Мин. просмотров", value=300, min=0, max=10**9,
         style={"description_width": "115px"}, layout=W.Layout(width="250px"))
     log = W.Checkbox(description="Логшкала просмотров", value=True, indent=False)
@@ -892,110 +881,82 @@ def launch(source, quality, metadata):
     open_html = W.Button(description="Открыть HTML-отчёт", button_style="success", icon="external-link", layout=W.Layout(width="230px"))
     download_html = W.Button(description="Скачать HTML", icon="download", layout=W.Layout(width="180px"))
     export = W.Button(description="Экспорт PNG + HTML + CSV", icon="archive", layout=W.Layout(width="270px"))
-    out, status, html_view, state = W.Output(), W.Output(), W.Output(), {}
+    status = W.HTML()
+    state = {"display_handle": None}
     def current():
         if start.value is None or end.value is None:
             raise ValueError("Укажите обе даты.")
         return build_report(source, quality, metadata, start.value, end.value,
                             level.value, content.value, threshold.value, log.value)
-    def render(_=None):
-        with out:
-            clear_output(wait=True)
-            try:
-                r = current(); state["report"] = r
-                display(HTML(header_html(r)))
-                if level.value != "Записи CSV":
-                    display(HTML('<p class="tg-note">Группировка по времени — приближение к медиагруппам, а не подтверждённые альбомы.</p>'))
-                for spec in r["specs"]:
-                    if spec["key"] in SECTIONS[section.value]:
-                        plotly_chart(spec, r).show(config=CONFIG)
-                if section.value == "Качество и таблицы":
-                    for key in ["summary", "monthly", "weekday", "top_views", "top_reaction_rate", "quality"]:
-                        display(HTML(f"<h3>{TABLE_NAMES[key]}</h3>" + table_html(r["tables"][key])))
-            except ValueError as error:
-                state.pop("report", None)
-                display(HTML("<p>" + escape(str(error)) + "</p>"))
     def html_path():
-        # Каждое открытие использует текущие фильтры, а не старый экспорт.
         r = current()
         path = create_html_report(r, OUTPUT_DIR)
-        state.update(html_path=path, html_report=r)
+        state.update(report=r, html_report=r, html_path=path)
         return path
-    def show_html(_=None):
-        open_html.disabled = True
-        with html_view:
-            clear_output(wait=True)
-            try:
-                path = html_path()
-                port = report_server(OUTPUT_DIR)
-                from urllib.parse import quote
-                display(HTML('<p><b>HTML-отчёт открыт ниже.</b> Внутри доступны разделы, поиск, подсказки и сохранение PNG. '
-                    'Чтобы открыть файл отдельно в браузере, нажмите «Скачать HTML».</p>'))
-                if IN_COLAB:
-                    # Официальный iframe API Colab: открытие порта в новой вкладке устарело.
-                    from google.colab import output
-                    output.serve_kernel_port_as_iframe(port, path="/" + quote(path.name), height="900")
-                else:
-                    from IPython.display import IFrame
-                    display(IFrame(src=f"http://127.0.0.1:{port}/{quote(path.name)}", width="100%", height=900))
-            except Exception as error:
-                print(f"HTML не открыт: {type(error).__name__}: {error}. Файл также можно получить кнопкой «Скачать HTML».")
-            finally:
-                open_html.disabled = False
+    def render(_=None):
+        update.disabled = open_html.disabled = True
+        status.value = '<p>Готовлю все 36 графиков для просмотра в Colab…</p>'
+        try:
+            path = html_path()
+            frame = notebook_report_frame(path)
+            # Отчёт выводится нативно, за пределами ipywidgets.Output.
+            # Обновление заменяет iframe целиком, не переиспользуя DOM Plotly.
+            if state["display_handle"] is None:
+                state["display_handle"] = display(frame, display_id=True)
+            else:
+                state["display_handle"].update(frame)
+            status.value = '<p><b>Готово: все 36 графиков и 11 таблиц доступны ниже.</b> ' + escape(state["report"]["period"]) + '</p>'
+        except Exception as error:
+            status.value = '<p style="color:#a12d32">Не удалось обновить отчёт: ' + escape(str(error)) + '</p>'
+        finally:
+            update.disabled = open_html.disabled = False
     def download(_=None):
         download_html.disabled = True
-        with status:
-            clear_output(wait=True)
-            try:
-                path = html_path()
-                print("HTML готов. Скачанный файл открывается двойным щелчком в браузере.")
-                if IN_COLAB:
-                    from google.colab import files
-                    files.download(str(path))
-                else:
-                    display(FileLink(str(path)))
-            except Exception as error:
-                print(f"Не удалось скачать HTML: {type(error).__name__}: {error}")
-            finally:
-                download_html.disabled = False
+        try:
+            path = html_path()
+            if IN_COLAB:
+                from google.colab import files
+                files.download(str(path))
+            else:
+                display(FileLink(str(path)))
+            status.value = '<p>HTML сохранён. Для просмотра внутри Colab скачивание не требуется.</p>'
+        except Exception as error:
+            status.value = '<p>Не удалось скачать HTML: ' + escape(str(error)) + '</p>'
+        finally:
+            download_html.disabled = False
     def save(_=None):
         export.disabled = True
-        with status:
-            clear_output(wait=True)
-            try:
-                r = current()
-                print(f"Создаю {len(r['specs'])} графиков, таблицы, автономный HTML и ZIP…")
-                archive = export_report(r)
-                print("Готово:", archive)
-                if IN_COLAB:
-                    from google.colab import files
-                    files.download(str(archive))
-                else:
-                    display(FileLink(str(archive)))
-            except Exception as error:
-                print(f"Экспорт не завершён: {type(error).__name__}: {error}")
-            finally:
-                export.disabled = False
+        status.value = '<p>Создаю PNG, таблицы, HTML и ZIP…</p>'
+        try:
+            archive = export_report(current())
+            if IN_COLAB:
+                from google.colab import files
+                files.download(str(archive))
+            else:
+                display(FileLink(str(archive)))
+            status.value = '<p>Архив со всеми материалами готов.</p>'
+        except Exception as error:
+            status.value = '<p>Экспорт не завершён: ' + escape(str(error)) + '</p>'
+        finally:
+            export.disabled = False
     update.on_click(render)
-    open_html.on_click(show_html)
+    open_html.on_click(render)
     download_html.on_click(download)
     export.on_click(save)
-    section.observe(render, names="value")
-    display(HTML(CSS + '<div class="tg"><h1>36 графиков для исследования канала</h1>'
-        'Выберите даты и фильтры → «Обновить». «Открыть HTML-отчёт» показывает все разделы ниже в отдельном окне просмотра.<br>'
-        '<small>«Скачать HTML» сохраняет автономный файл. Камера на графике сохраняет PNG. '
-        'Порог просмотров применяется к таблице лидеров по доле реакций и графику доли реакций.</small></div>'))
-    display(W.VBox([W.HBox([start, end, section], layout=W.Layout(flex_flow="row wrap")),
+    display(HTML(CSS + '<div class="tg"><h1>Все 36 графиков прямо в Colab</h1>'
+        'Отчёт появляется ниже автоматически. Внутри есть разделы, поиск и полноэкранный просмотр.<br>'
+        '<small>Измените даты и фильтры → «Обновить». «Открыть HTML-отчёт» повторно открывает отчёт с текущими фильтрами. '
+        'Скачивание нужно только для сохранения копии.</small></div>'))
+    display(W.VBox([W.HBox([start, end], layout=W.Layout(flex_flow="row wrap")),
         W.HBox([level, content, log], layout=W.Layout(flex_flow="row wrap")),
         W.HBox([threshold, update], layout=W.Layout(flex_flow="row wrap")),
-        W.HBox([open_html, download_html, export], layout=W.Layout(flex_flow="row wrap")), status, html_view, out]))
+        W.HBox([open_html, download_html, export], layout=W.Layout(flex_flow="row wrap")), status]))
     render()
-    return dict(state=state, render=render, save=save, show_html=show_html, download_html=download,
-        controls=dict(start=start, end=end, section=section, level=level, content=content, threshold=threshold,
+    return dict(state=state, render=render, save=save, show_html=render, download_html=download,
+        controls=dict(start=start, end=end, level=level, content=content, threshold=threshold,
             log=log, open_html=open_html, download_html=download_html, export=export))
 
 if __name__ == "__main__":
     SOURCE, QUALITY, SOURCE_INFO = load_data()
-    print(f"Загружено {len(SOURCE):,} записей; файл: {SOURCE_INFO['path']}".replace(",", " "))
-    print("Время: Europe/Moscow. Нажмите «Открыть HTML-отчёт», чтобы исследовать все 36 графиков.")
+    print(f"Загружено {len(SOURCE):,} записей; время Europe/Moscow.".replace(",", " "))
     APP = launch(SOURCE, QUALITY, SOURCE_INFO)
